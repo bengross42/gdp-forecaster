@@ -245,6 +245,7 @@ def estimate_bvar(Y, p, X_exog = None, lambda_val=0.2, delta=0.5, decay=2, n_dra
     T, n = Y.shape
 
     r=0
+    
     if X_exog is not None:
         r = X_exog.shape[1]
 
@@ -897,8 +898,8 @@ def standardize_df(df):
     Y_stand = (df - Y_means) / Y_stds
 
     ## Keep dummies non-standardized
-    Y_stand["Covid"] = df["Covid"]
-    Y_stand["GFC"] = df["GFC"]
+    Y_stand["Covid_dummy"] = df["Covid_dummy"]
+    Y_stand["GFC_dummy"] = df["GFC_dummy"]
 
 
     standardization_dict = {}
@@ -1109,7 +1110,7 @@ def plot_gdp_with_events(df, event_dates, gdp_col='GDP', line_color='red'):
     plt.tight_layout()
     #plt.show()
 # %%
-def process_data(df, new_cols, QoQ = True):
+def process_data(df, new_cols, covid_df, QoQ = True):
 
     df.columns = ["Quarter", "HKGDP", "HKGDP_yoy", "Imports", "Exports", "RSV", "HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO", "CCPI"]
 
@@ -1184,8 +1185,8 @@ def process_data(df, new_cols, QoQ = True):
     covid_start = '2020Q1'
     covid_end = '2021Q2'
 
-    df["Covid"] = ((df.index < covid_end) & (df.index > covid_start)) 
-    df['Covid'] = df['Covid'].astype(int)
+    df["Covid_dummy"] = ((df.index < covid_end) & (df.index > covid_start)) 
+    df['Covid_dummy'] = df['Covid_dummy'].astype(int)
 
     #==============================================#
     ## ADDING A GLOBAL FINANCIAL CRISIS DUMMY
@@ -1196,10 +1197,52 @@ def process_data(df, new_cols, QoQ = True):
     gfc_start = '2008Q3'
     gfc_end = '2009Q2'
 
-    df["GFC"] = ((df.index < gfc_end) & (df.index > gfc_start)) 
-    df['GFC'] = df['GFC'].astype(int)
+    df["GFC_dummy"] = ((df.index < gfc_end) & (df.index > gfc_start)) 
+    df['GFC_dummy'] = df['GFC_dummy'].astype(int)
+
+
+    ## ADD HONG KONG AND CHINA COVID CONTROLS
+    
+    start_date = "2020-03-01"
+    end_date = "2023-03-01"
+
+    date_range = pd.date_range(start_date, end_date, freq = '3MS')
+
+    covid_df.columns = ["Quarter", "HK_cases", "China_cases"]
+    covid_df.index = covid_df["Quarter"]
+    covid_df.index = pd.to_datetime(covid_df.index)
+    covid_df = covid_df.drop(columns = "Quarter")
+
+    covid_q_array = np.zeros((len(covid_df), 2))
+    covid_q = pd.DataFrame(covid_q_array)
+    covid_q.index = covid_df.index
+    hk_running_max = 0
+    china_running_max = 0
+    for idx in covid_df.index:
+        
+        if covid_df.loc[idx]["HK_cases"] > hk_running_max:
+            hk_running_max = covid_df.loc[idx]["HK_cases"]
+        if covid_df.loc[idx]['China_cases'] > china_running_max:
+            china_running_max = covid_df.loc[idx]['China_cases']
+
+        if idx in date_range:
+            covid_q.loc[idx] = [hk_running_max, china_running_max]
+            hk_running_max = 0
+            china_running_max = 0
+
+    new_covid_df = covid_q.loc[date_range]
+    new_covid_df.columns = ["HK_new_cases", "China_new_cases"]
+
+    #print(new_covid_df)
+
+    df["HK_Covid_Proxy"] = new_covid_df["HK_new_cases"]
+    df['HK_Covid_Proxy'] = df['HK_Covid_Proxy'].fillna(0)
+    df["China_Covid_Proxy"] = new_covid_df["China_new_cases"]
+    df['China_Covid_Proxy'] = df['China_Covid_Proxy'].fillna(0)
 
     return df
+
+
 # %%
 def slice_df(df, cutoff_date):
     ## INITIALIZING TRAINING DATA BASED ON 2023Q3 CUTOFF
