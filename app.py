@@ -49,11 +49,13 @@ if uploaded_file is not None:
     selected_GDP = st.sidebar.multiselect(
         label="Choose HKGDP specification for the BVAR",
         options=["HKGDP_qoq", "HKGDP_yoy"],
+        key = "sel_gdp"
     )
 
     selected_variables = st.sidebar.multiselect(
         label="Choose OTHER variables for the BVAR",
         options=available_variables,
+        key = "sel_vars"
     )
 
     if len(selected_GDP) > 0 and selected_GDP[0] == "HKGDP_qoq":
@@ -72,16 +74,77 @@ if uploaded_file is not None:
             st.success("Data processed successfully!")
             st.dataframe(df) 
             
+           # ==========================================
+            # RECOMMENDED SPECIFICATIONS
+            # ==========================================
+            
+            # 1. DEFINE THE CALLBACK FUNCTIONS FIRST
+            # These run behind the scenes BEFORE the page redraws
+            def load_rec_1():
+                st.session_state.sel_gdp = ["HKGDP_qoq"]
+                st.session_state.sel_vars = ["Imports", "RSV", "FFR"]
+                st.session_state.lag_val = 2
+                st.session_state.lambda_val = 0.25
+                st.session_state.delta_val = 0.2
+                st.session_state.decay_val = 1
+
+            def load_rec_2():
+                st.session_state.sel_gdp = ["HKGDP_qoq"]
+                st.session_state.sel_vars = available_variables # Selects ALL
+                st.session_state.lag_val = 4
+                st.session_state.lambda_val = 0.25
+                st.session_state.delta_val = 0.3
+                st.session_state.decay_val = 1
+
+            def load_rec_3():
+                st.session_state.sel_gdp = ["HKGDP_yoy"]
+                st.session_state.sel_vars = ["Imports", "RSV", "FFR"]
+                st.session_state.lag_val = 6
+                st.session_state.lambda_val = 0.4
+                st.session_state.delta_val = 0.2
+                st.session_state.decay_val = 1
+
+            def load_rec_4():
+                st.session_state.sel_gdp = ["HKGDP_yoy"]
+                st.session_state.sel_vars = available_variables # Selects ALL
+                st.session_state.lag_val = 2
+                st.session_state.lambda_val = 0.25
+                st.session_state.delta_val = 0.5
+                st.session_state.decay_val = 1
+
+            # 2. ASSIGN CALLBACKS TO BUTTONS
+            st.subheader("🎯 Recommended Specifications")
+            st.markdown("Click a button below to instantly load the parameters into the sidebar.")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**1. QoQ Baseline (Parsimonious)**")
+                # Notice we use on_click= instead of if st.button
+                st.button("Load: QoQ | Core Vars | p=2, λ=.25, δ=.2", on_click=load_rec_1, use_container_width=True)
+                    
+                st.markdown("**3. YoY Baseline (Parsimonious)**")
+                st.button("Load: YoY | Core Vars | p=6, λ=.4, δ=.2", on_click=load_rec_3, use_container_width=True)
+
+            with col2:
+                st.markdown("**2. QoQ Full Model**")
+                st.button("Load: QoQ | All Vars | p=4, λ=.25, δ=.3", on_click=load_rec_2, use_container_width=True)
+                    
+                st.markdown("**4. YoY Full Model**")
+                st.button("Load: YoY | All Vars | p=2, λ=.25, δ=.5", on_click=load_rec_4, use_container_width=True)
+            
+            st.divider() 
+            
             col_spec = df.columns.tolist()
             
             # ==========================================
             # MOVE DISPLAY OPTIONS & PARAMETERS HERE
             # ==========================================
             st.sidebar.header("2. Model Parameters")
-            lag_val = st.sidebar.slider("Lag Length (p)", min_value=1, max_value=8, value=4)
-            lambda_val = st.sidebar.slider("Prior Tightness (Lambda)", min_value=0.01, max_value=1.0, value=0.2, step=0.01)
-            delta = st.sidebar.slider("Cross Variable Tightness (Delta)", min_value=0.01, max_value=1.0, value=0.2, step=0.01)
-            decay = st.sidebar.slider("Shrinkage Over Time (Decay)", min_value=1.0, max_value=4.0, value=2.0, step=1.0)
+            lag_val = st.sidebar.slider("Lag Length (p)", min_value=1, max_value=8, value=4, key = "lag_val")
+            lambda_val = st.sidebar.slider("Prior Tightness (Lambda)", min_value=0.01, max_value=1.0, value=0.2, step=0.01, key = "lambda_val")
+            delta = st.sidebar.slider("Cross Variable Tightness (Delta)", min_value=0.01, max_value=1.0, value=0.2, step=0.01, key = "delta_val")
+            decay = st.sidebar.slider("Shrinkage Over Time (Decay)", min_value=1.0, max_value=4.0, value=2.0, step=1.0, key = "decay_val")
             n_draws = st.sidebar.slider("Number Draws", min_value=500, max_value=8000, value=2000, step=500)
             h_steps = st.sidebar.slider("Forecast Horizon (h_steps)", min_value=1, max_value=8, value=4, step=1)
             
@@ -97,7 +160,7 @@ if uploaded_file is not None:
             # ==========================================
             # THE FORECAST BUTTON
             # ==========================================
-            if st.button("🚀 Click Me to Run Forecast", type="primary", use_container_width=True):
+            if st.button("🚀 Click Here to Run Forecast", type="primary", use_container_width=True):
                 
                 with st.spinner(f"Estimating BVAR ({n_draws} draws) and forecasting {h_steps} steps ahead..."):
                     
