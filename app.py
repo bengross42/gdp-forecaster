@@ -25,10 +25,21 @@ from bvar_model import (
 # ==========================================
 # PRO-TIP: CACHING
 # ==========================================
+
 @st.cache_data
-def load_and_process_data(uploaded_file, new_cols, QoQ):
+def load_covid_control_data():
+    """
+    Loads the static COVID control variable from the app folder.
+    """
+    # If you saved as CSV:
+    covid_df = pd.read_csv("covid_control_data.csv")
+    
+    return covid_df
+
+@st.cache_data
+def load_and_process_data(uploaded_file, new_cols, covid_df, QoQ):
     df_raw = pd.read_excel(uploaded_file)
-    df = process_data(df_raw, new_cols, QoQ)
+    df = process_data(df_raw, new_cols, covid_df, QoQ)
     return df
 # ==========================================
 
@@ -60,6 +71,16 @@ if uploaded_file is not None:
         key = "sel_vars"
     )
 
+    # --- NEW: EXOGENOUS CONTROL VARIABLES ---
+    # Replace the names below with the EXACT column names from your merged dataframe
+    available_exog_controls = ["Covid_dummy", "GFC_dummy", "HK_Covid_Proxy", "China_Covid_Proxy"]
+    
+    selected_exog = st.sidebar.multiselect(
+        label="Choose Exogenous Control Variables",
+        options=available_exog_controls,
+        key="sel_exog"
+    )
+
     if len(selected_GDP) > 0 and selected_GDP[0] == "HKGDP_qoq":
         QoQ = True
     else:
@@ -71,7 +92,13 @@ if uploaded_file is not None:
     else:
         try:
             final_cols = ["HKGDP"] + selected_variables
-            df = load_and_process_data(uploaded_file, final_cols, QoQ)
+
+            covid_df = load_covid_control_data()
+            df = load_and_process_data(uploaded_file, final_cols, covid_df, QoQ)
+
+            # for exog_var in available_exog_controls:
+            #     if exog_var not in selected_exog:
+            #         df=df.drop(columns = exog_var)
             
             st.success("Data processed successfully!")
             st.dataframe(df) 
@@ -82,6 +109,9 @@ if uploaded_file is not None:
             
             # 1. DEFINE THE CALLBACK FUNCTIONS FIRST
             # These run behind the scenes BEFORE the page redraws
+
+            default_exog = [x for x in available_exog_controls if x != "Covid_dummy"]
+
             def load_rec_1():
                 st.session_state.sel_gdp = ["HKGDP_qoq"]
                 st.session_state.sel_vars = ["Imports", "RSV", "FFR"]
@@ -89,6 +119,7 @@ if uploaded_file is not None:
                 st.session_state.lambda_val = 0.25
                 st.session_state.delta_val = 0.2
                 st.session_state.decay_val = 1
+                st.session_state.sel_exog = default_exog
 
             def load_rec_2():
                 st.session_state.sel_gdp = ["HKGDP_qoq"]
@@ -97,6 +128,7 @@ if uploaded_file is not None:
                 st.session_state.lambda_val = 0.25
                 st.session_state.delta_val = 0.3
                 st.session_state.decay_val = 1
+                st.session_state.sel_exog = default_exog
 
             def load_rec_3():
                 st.session_state.sel_gdp = ["HKGDP_yoy"]
@@ -105,6 +137,7 @@ if uploaded_file is not None:
                 st.session_state.lambda_val = 0.4
                 st.session_state.delta_val = 0.2
                 st.session_state.decay_val = 1
+                st.session_state.sel_exog = default_exog
 
             def load_rec_4():
                 st.session_state.sel_gdp = ["HKGDP_yoy"]
@@ -113,6 +146,7 @@ if uploaded_file is not None:
                 st.session_state.lambda_val = 0.25
                 st.session_state.delta_val = 0.5
                 st.session_state.decay_val = 1
+                st.session_state.sel_exog = default_exog
 
             # 2. ASSIGN CALLBACKS TO BUTTONS
             st.subheader("🎯 Recommended Specifications Based on Previous Hyperparameter Optimization")
@@ -160,14 +194,70 @@ if uploaded_file is not None:
             show_equation = st.sidebar.checkbox("Show Estimating Equation")
             target_var_idx = st.sidebar.number_input("Variable Index to Plot/Print (0 = first column)", value=0)
 
-            # NEW: Download Checkboxes
-            st.sidebar.subheader("4. Download Options")
+                        # ==========================================
+            # NEW: SCENARIO ANALYSIS TOGGLE
+            # ==========================================
+            st.sidebar.subheader("4. Scenario Analysis")
+            run_scenario = st.sidebar.checkbox("Condition Future Variables", key="scenario_toggle")
+            
+            condition_dict = None
+    
+            if run_scenario:
+                st.sidebar.error("⚠️ WARNING: Input values must be in STANDARDIZED units (e.g., 1.0 for a 1 std dev shock), NOT raw percentages!")
+                
+                # --- DYNAMIC FONT SIZE LOGIC ---
+                # Start at 16px, shrink by ~1.2px for every step over 1, minimum 9px
+                dynamic_font_size = max(9, 16 - (h_steps - 1) * 1.2)
+                
+                # Inject CSS directly into the Streamlit sidebar
+                custom_css = f"""
+                <style>
+                /* Target text inputs specifically inside the sidebar */
+                section[data-testid="stSidebar"] div[data-testid="stTextInput"] input {{
+                    font-size: {dynamic_font_size}px !important;
+                    padding: 4px 6px !important; /* Shrink the box padding to fit more horizontally */
+                }}
+                </style>
+                """
+                st.markdown(custom_css, unsafe_allow_html=True)
+                # ----------------------------------
+
+                condition_dict = {}
+                
+                # Iterate through selected variables (which excludes HKGDP)
+                for i, var_name in enumerate(selected_variables):
+                    idx_in_final = final_cols.index(var_name) 
+                    
+                    st.sidebar.markdown(f"**{var_name}**")
+                    
+                    # Create horizontal columns so inputs fit in the sidebar
+                    input_cols = st.sidebar.columns(h_steps)
+                    vals = []
+                    
+                    for h in range(h_steps):
+                        with input_cols[h]:
+                            val = st.text_input(
+                                label=f"t+{h+1}", 
+                                key=f"cond_{var_name}_{h}", 
+                                label_visibility="collapsed"
+                            )
+                            
+                            if val.strip() != "":
+                                try:
+                                    vals.append(float(val))
+                                except ValueError:
+                                    st.sidebar.error(f"Invalid number for {var_name} t+{h+1}")
+                                    
+                    if len(vals) > 0:
+                        condition_dict[idx_in_final] = vals
+            
+            st.sidebar.subheader("5. Download Options")
             dl_summary = st.sidebar.checkbox("Download Summary Forecast (Median & Bands)")
             dl_full = st.sidebar.checkbox("Download Full Forecast Draws (All MCMC Samples)")
 
-            # ==========================================
+            # ===========================================================================================================================================
             # THE FORECAST BUTTON
-            # ==========================================
+            # ===========================================================================================================================================
             if st.button("🚀 Click Here to Run Forecast", type="primary", use_container_width=True):
                 
                 with st.spinner(f"Estimating BVAR ({n_draws} draws) and forecasting {h_steps} steps ahead..."):
@@ -182,10 +272,17 @@ if uploaded_file is not None:
                         "China_PMI_NEO": ["FFR"]
                     }
                     exog_dict = create_exog_dict(final_cols, diff_exog_dict)
-                    exog_list = ["Covid", "GFC"]
 
-                    X_exog = Y_stand[exog_list]
+                    # --- DYNAMIC EXOG HANDLING ---
+                    exog_list = selected_exog
+
+                    if len(exog_list) > 0:
+                        X_exog = Y_stand[exog_list]
+                    else:
+                        X_exog = None # Safely passes None if user unchecks all boxes
+                        
                     future_exog = None
+
 
                     # --- DYNAMICALLY SET PLOT/EQUATION ARGS ---
                     plot_idx = target_var_idx if show_plot else None
@@ -232,7 +329,7 @@ if uploaded_file is not None:
                     # --- GENERATE FORECAST ---
                     conditional_forecast_draws = dynamic_conditional_forecast(
                         Y_stand[final_cols], lag_val, B_draws, Sigma_draws, h_steps, 
-                        future_exog=future_exog, condition_dict=None
+                        future_exog=future_exog, condition_dict=condition_dict
                     )
 
                     last_date = df.index[-1]
