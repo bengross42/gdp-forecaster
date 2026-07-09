@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import io
+import contextlib
 
 # Import the functions you saved in Step 2
 from bvar_model import (
@@ -113,7 +115,7 @@ if uploaded_file is not None:
                 st.session_state.decay_val = 1
 
             # 2. ASSIGN CALLBACKS TO BUTTONS
-            st.subheader("🎯 Recommended Specifications")
+            st.subheader("🎯 Recommended Specifications Based on Previous Hyperparameter Optimization")
             st.markdown("Click a button below to instantly load the parameters into the sidebar.")
             
             col1, col2 = st.columns(2)
@@ -147,6 +149,7 @@ if uploaded_file is not None:
             decay = st.sidebar.slider("Shrinkage Over Time (Decay)", min_value=1.0, max_value=4.0, value=2.0, step=1.0, key = "decay_val")
             n_draws = st.sidebar.slider("Number Draws", min_value=500, max_value=8000, value=2000, step=500)
             h_steps = st.sidebar.slider("Forecast Horizon (h_steps)", min_value=1, max_value=8, value=4, step=1)
+            interval_width = st.sidebar.slider("Confidence Level", min_value=1, max_value=99, value=68, step=1)
             
             # Ensure integers
             n_draws = int(n_draws)
@@ -156,6 +159,11 @@ if uploaded_file is not None:
             show_plot = st.sidebar.checkbox("Show Coefficient Plot")
             show_equation = st.sidebar.checkbox("Show Estimating Equation")
             target_var_idx = st.sidebar.number_input("Variable Index to Plot/Print (0 = first column)", value=0)
+
+            # NEW: Download Checkboxes
+            st.sidebar.subheader("4. Download Options")
+            dl_summary = st.sidebar.checkbox("Download Summary Forecast (Median & Bands)")
+            dl_full = st.sidebar.checkbox("Download Full Forecast Draws (All MCMC Samples)")
 
             # ==========================================
             # THE FORECAST BUTTON
@@ -180,31 +188,39 @@ if uploaded_file is not None:
                     future_exog = None
 
                     # --- DYNAMICALLY SET PLOT/EQUATION ARGS ---
-                    # If checkbox is true, pass the index. If false, pass None (which turns it off in your function)
                     plot_idx = target_var_idx if show_plot else None
                     eq_idx = target_var_idx if show_equation else None
 
                     # --- ESTIMATE BVAR ---
-                    B_draws, Sigma_draws, B_post, S_post = estimate_bvar(
-                        Y_stand[final_cols], 
-                        p=lag_val, 
-                        lambda_val=lambda_val, 
-                        delta=delta, 
-                        decay=decay, 
-                        X_exog=X_exog, 
-                        exog_dict=exog_dict, 
-                        n_draws=n_draws, # Changed from 8000 to your slider variable
-                        plot_var_idx=plot_idx, 
-                        print_eq_idx=eq_idx, 
-                        var_names=final_cols, 
-                        exog_names=exog_list
-                    )
+                    # Create a temporary string buffer to catch the print() statement
+                    equation_buffer = io.StringIO()
+                    
+                    # Run the function, but redirect any print() outputs to our buffer
+                    with contextlib.redirect_stdout(equation_buffer):
+                        B_draws, Sigma_draws, B_post, S_post = estimate_bvar(
+                            Y_stand[final_cols], 
+                            p=lag_val, 
+                            lambda_val=lambda_val, 
+                            delta=delta, 
+                            decay=decay, 
+                            X_exog=X_exog, 
+                            exog_dict=exog_dict, 
+                            n_draws=n_draws, 
+                            plot_var_idx=plot_idx, 
+                            print_eq_idx=eq_idx, 
+                            var_names=final_cols, 
+                            exog_names=exog_list
+                        )
 
                     # --- DISPLAY ESTIMATING EQUATION ---
-                    # (Note: Your function uses print(), which Streamlit captures in a grey box at the bottom)
                     if show_equation:
-                        st.subheader("📝 Estimating Equation")
-                        st.caption("*See captured output below*")
+                        # Extract the text from the buffer
+                        equation_text = equation_buffer.getvalue()
+                        
+                        if equation_text.strip(): # Check if it's not empty
+                            st.subheader("📝 Estimating Equation")
+                            # st.code() renders it in a nice monospace font, preserving your spacing!
+                            st.code(equation_text, language=None)
 
                     # --- DISPLAY COEFFICIENT PLOT ---
                     if show_plot:
@@ -224,12 +240,40 @@ if uploaded_file is not None:
 
                     # --- DISPLAY FORECAST PLOT ---
                     st.subheader("📈 GDP Forecast")
-                    plot_pure_forecast(
+                    
+                    # CAPTURE the two returned dataframes
+                    summary_df, full_df = plot_pure_forecast(
                         conditional_forecast_draws, future_dates, standardization_dict, 
-                        target_var="HKGDP", train_df=df, n_train_tail=16
+                        target_var="HKGDP", train_df=df, n_train_tail=16, 
+                        interval_width=interval_width # Pass the slider value here!
                     )
+                    
                     st.pyplot(plt.gcf())
                     plt.clf() 
+
+                    # --- DOWNLOAD FUNCTIONALITY ---
+                    st.subheader("📥 Download Data")
+                    download_col1, download_col2 = st.columns(2)
+                    
+                    # If the user checked the summary box, show the button
+                    with download_col1:
+                        if dl_summary:
+                            st.download_button(
+                                label="Download Summary CSV",
+                                data=summary_df.to_csv(),
+                                file_name=f"HKGDP_Summary_{interval_width}pct.csv",
+                                mime="text/csv"
+                            )
+                    
+                    # If the user checked the full draws box, show the button
+                    with download_col2:
+                        if dl_full:
+                            st.download_button(
+                                label="Download Full Draws CSV",
+                                data=full_df.to_csv(),
+                                file_name="HKGDP_Full_Draws.csv",
+                                mime="text/csv"
+                            )
 
                 st.success("Forecast Generated Successfully!")
 
