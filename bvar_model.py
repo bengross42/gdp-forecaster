@@ -405,7 +405,7 @@ def estimate_bvar(Y, p, X_exog = None, lambda_val=0.2, delta=0.5, decay=2, n_dra
         
         # Print to console
         print("\n" + "="*60)
-        print(" ESTIMATED EQUATION (Posterior Mean Coefficients):")
+        print(" ESTIMATED EQUATION (Posterior Mean Coefficients - All Variables Standardized):")
         print("="*60)
         print(eq_str)
         print("="*60 + "\n")
@@ -704,7 +704,7 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 
 
 # %%
@@ -723,32 +723,16 @@ def build_condition_dict(test, cond_setup, standardization_dict):
 
 # %%
 
+
+
 def plot_pure_forecast(forecast_draws, forecast_dates, standardization_dict, 
-                       target_var="HKGDP", train_df=None, n_train_tail=8):
+                       target_var="HKGDP", train_df=None, n_train_tail=8, interval_width = 0.68):
     """
-    Plots a pure BVAR forecast with 68% credible intervals.
-    No RMSE, no test data comparison.
-    
-    Parameters:
-    -----------
-    forecast_draws : numpy array (S x h_steps x n)
-        The standardized posterior draws from the BVAR.
-    forecast_dates : array-like
-        The dates corresponding to the forecast horizon (length = h_steps).
-    standardization_dict : dict
-        Dictionary containing the mean and std used to standardize the data.
-        Format expected: {"HKGDP": (mean_val, std_val)}
-    target_var : str
-        The name of the variable being forecasted (used to look up in dict and title).
-    train_df : pandas Series or DataFrame, optional
-        The training data. If provided, plots the last `n_train_tail` periods 
-        to give visual context leading up to the forecast.
-    n_train_tail : int
-        How many periods of the training data to plot before the forecast starts.
+    Plots a pure BVAR forecast with variable credible intervals.
+    Returns summary and full data for downloading.
     """
     
     # 1. Extract the target variable draws (S x h_steps)
-    # Assuming HKGDP is the 0th column in your BVAR
     target_draws = forecast_draws[:, :, 0] 
     
     # 2. Un-standardize the draws back to raw values
@@ -757,61 +741,66 @@ def plot_pure_forecast(forecast_draws, forecast_dates, standardization_dict,
     
     unstd_draws = (target_draws * std_scale) + mean_scale
     
-    # 3. Calculate median and 68% credible bands
+    # 3. Calculate median and dynamic credible bands
     median_forecast = np.median(unstd_draws, axis=0)
-    lo_band = np.percentile(unstd_draws, 16, axis=0)
-    hi_band = np.percentile(unstd_draws, 84, axis=0)
+    lo_band = np.percentile(unstd_draws, ((100-interval_width)/2), axis=0)
+    hi_band = np.percentile(unstd_draws, ((100+interval_width)/2), axis=0)
     
     # ---------------------------------------------------------
     # PLOT THE FORECAST
     # ---------------------------------------------------------
     plt.figure(figsize=(12, 6))
     
-    # Optional: Plot tail end of training data for visual continuity
     if train_df is not None:
-        # Extract just the target column if a full dataframe is passed
         if isinstance(train_df, pd.DataFrame):
             train_data = train_df[target_var].iloc[-n_train_tail:]
         else:
             train_data = train_df.iloc[-n_train_tail:]
             
-        # Added marker='o' for dots on historical data
         plt.plot(train_data.index, train_data.values, color='black', 
                  linewidth=1.5, label='Historical Data', marker='o', markersize=5)
     
-    # Added marker='o' for dots on the forecast median
     plt.plot(forecast_dates, median_forecast, 'b-', linewidth=2.5, 
              label='BVAR Median Forecast', marker='o', markersize=5)
     
-    # --- NEW: Connect the historical line to the forecast line ---
+    for xi, yi in zip(forecast_dates, median_forecast):
+        plt.annotate(text=f'{yi: .2f}', xy = (xi, yi), xytext = (0,-25), textcoords = "offset points", ha='center')
+    
     if train_df is not None:
-        # Grab the last point of the historical data
         last_hist_x = train_data.index[-1]
         last_hist_y = train_data.values[-1]
-        
-        # Grab the first point of the forecast
         first_fc_x = forecast_dates[0]
         first_fc_y = median_forecast[0]
-        
-        # Draw a line connecting them (colored blue to match the forecast)
-        plt.plot([last_hist_x, first_fc_x], [last_hist_y, first_fc_y], 
-                 color='blue', linewidth=2.5)
+        plt.plot([last_hist_x, first_fc_x], [last_hist_y, first_fc_y], color='blue', linewidth=2.5)
     
-    # Plot the 68% Confidence Band
-    plt.fill_between(forecast_dates, lo_band, hi_band, color='blue', alpha=0.2, label='68% Credible Interval')
+    # DYNAMIC LEGEND: Changes "68%" to whatever the user selected
+    plt.fill_between(forecast_dates, lo_band, hi_band, color='blue', alpha=0.2, 
+                     label=f'{interval_width}% Credible Interval')
     
-    # Formatting
     plt.title(f"Pure BVAR Forecast: {target_var}", fontsize=14)
     plt.xlabel("Date", fontsize=12)
     plt.ylabel(f"{target_var}", fontsize=12)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3, linestyle='--')
-    
-    # Automatically rotate x-axis date labels if they are datetime objects
     plt.gcf().autofmt_xdate()
-    
     plt.tight_layout()
-    plt.show()
+    # plt.show() removed for Streamlit compatibility
+    
+    # ---------------------------------------------------------
+    # PREPARE DATA FOR DOWNLOAD
+    # ---------------------------------------------------------
+    # 1. Summary DataFrame (Rows = dates, Columns = Median, Lower, Upper)
+    summary_df = pd.DataFrame({
+        'Median': median_forecast,
+        f'Lower_{interval_width}': lo_band,
+        f'Upper_{interval_width}': hi_band
+    }, index=forecast_dates)
+    
+    # 2. Full Draws DataFrame (Rows = dates, Columns = Draw_1, Draw_2, ...)
+    # target_draws is shape (S x h_steps). Transpose it so dates are rows.
+    full_df = pd.DataFrame(unstd_draws.T, index=forecast_dates, columns=[f"Draw_{i+1}" for i in range(unstd_draws.shape[0])])
+    
+    return summary_df, full_df
 
 # %%
 def grid_search (df, col_spec, lag_vals, lambda_vals, deltas, decays, training_cutoffs, exog_list, exog_dict, h_steps, n_draws, test_HKGDP, test_dates, cond_setup = None, rolling = False, window = None):
@@ -1118,7 +1107,7 @@ def plot_gdp_with_events(df, event_dates, gdp_col='GDP', line_color='red'):
     
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 # %%
 def process_data(df, new_cols, QoQ = True):
 
@@ -1306,7 +1295,7 @@ def fit_arima_and_eval(p: int, d: int, q: int, train: pd.Series, test: pd.Series
     plt.ylabel("HKGDP")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
     return result
 
 
@@ -1458,7 +1447,7 @@ def plot_gdp_with_events(df, event_dates, gdp_col='GDP', line_color='red'):
     
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
 
 def VAR_grid_search(df, col_spec, training_cutoffs, lag_vals, h_steps, target_var=None):
     """
