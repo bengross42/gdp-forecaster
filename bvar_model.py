@@ -611,37 +611,36 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
     """
     Calculates RMSE, prints results, and plots forecasts.
     Robust to both Levels and First-Differenced HKGDP.
-    
-    Parameters:
-    -----------
-    forecast_draws : S x h_steps x n array (Standardized draws)
-    actual_HKGDP : array-like (Raw actual GDP for the test set)
-    is_diff : bool (True if forecast_draws are for 1st differences)
-    Y_means : array (Means from the training set used for standardization)
-    Y_stds : array (Stds from the training set used for standardization)
-    last_train_value : float (The RAW level of HKGDP at the end of the training set. 
-                                 Only used if is_diff=True)
-    test_dates : array-like (Dates for the x-axis of the plot)
     """
     
     actual_HKGDP = np.asarray(actual_HKGDP)
+    h_fc = forecast_draws.shape[1]
+    h_test = len(actual_HKGDP)
 
-    if forecast_draws.shape[1] < len(actual_HKGDP):
-        actual_HKGDP = actual_HKGDP[:forecast_draws.shape[1]]
-        test_dates = test_dates[:forecast_draws.shape[1]]
-        print(actual_HKGDP)
-        print(test_dates)
-        print("=========================")
-    
+    # ---------------------------------------------------------
+    # FIX 1: Handle h_steps > available test data length
+    # ---------------------------------------------------------
+    if h_test < h_fc:
+        print(f"WARNING: Requested h_steps ({h_fc}) exceeds available test data ({h_test}).")
+        print(f"Reverting h_steps to {h_test} for this evaluation.")
+        forecast_draws = forecast_draws[:, :h_test, :]
+        
+        # Ensure test_dates is sliceable (handles both lists and pandas DatetimeIndex)
+        if hasattr(test_dates, '__getitem__'): 
+            test_dates = test_dates[:h_test]
+            
+    elif h_fc < h_test:
+        # Existing logic: Handle test data being longer than forecast
+        actual_HKGDP = actual_HKGDP[:h_fc]
+        if hasattr(test_dates, '__getitem__'): 
+            test_dates = test_dates[:h_fc]
+    # ---------------------------------------------------------
 
     if not is_diff:
         mean_scale = standardization_dict["HKGDP"][0]
         std_scale = standardization_dict["HKGDP"][1]
-        # --- LEVELS / STANDARDIZED GROWTH RATES ---
-        # 1. Un-standardize the draws
         unstd_draws = forecast_draws[:, :, 0] * std_scale + mean_scale
         
-        # 2. Calculate median and bands
         median_forecast_path = np.median(unstd_draws, axis=0)
         lo_band = np.percentile(unstd_draws, 16, axis=0)
         hi_band = np.percentile(unstd_draws, 84, axis=0)
@@ -649,19 +648,16 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
     else:
         mean_scale = standardization_dict["HKGDP_diff"][0]
         std_scale = standardization_dict["HKGDP_diff"][1]
-        # --- FIRST DIFFERENCES ---
+        # h_steps is dynamically pulled from the (potentially truncated) forecast_draws
         S, h_steps, n = forecast_draws.shape
         level_draws = np.zeros((S, h_steps))
         
-        # 1. Un-standardize the DIFFERENCES first!
         unstd_diff_draws = forecast_draws[:, :, 0] * std_scale + mean_scale
         
-        # 2. Cumulatively sum the RAW differences to get RAW levels
         level_draws[:, 0] = last_train_value + unstd_diff_draws[:, 0]
         for i in range(1, h_steps):
             level_draws[:, i] = level_draws[:, i-1] + unstd_diff_draws[:, i]
 
-        # 3. Calculate median and bands from the reconstructed levels
         median_forecast_path = np.median(level_draws, axis=0)
         lo_band = np.percentile(level_draws, 16, axis=0)
         hi_band = np.percentile(level_draws, 84, axis=0)
@@ -684,20 +680,32 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
     # ---------------------------------------------------------
     plt.figure(figsize=(12, 6))
     
-    
-    # Plot median forecast
-    plt.plot(test_dates, median_forecast_path, 'b-', linewidth=2, label='BVAR Median Forecast')
-    
-    # Plot 68% Confidence Band (16th to 84th percentile)
+    plt.plot(test_dates, median_forecast_path, 'b-', linewidth=2, label='BVAR Median Forecast', marker='o')
     plt.fill_between(test_dates, lo_band, hi_band, color='blue', alpha=0.2, label='68% Credible Interval')
 
     if include_training:
-        plt.plot(train.index[40:], train['HKGDP'][40:], label='Train', color='C0')
+        first_training_index = len(train)-13 ## show 3 years prior to forecast
+
+        plt.plot(train.index[first_training_index:], train['HKGDP'][first_training_index:], label='Train', color='C0')
+        
+        # ---------------------------------------------------------
+        # FIX 2: Connect Train and Test lines
+        # ---------------------------------------------------------
+        last_train_date = train.index[-1]
+        last_train_val = train['HKGDP'].iloc[-1]
+        first_test_date = test_dates[0]
+        first_test_val = actual_HKGDP[0]
+        
+        # Draw the bridge using the same styling as the test data ('k--', marker='o')
+        plt.plot([last_train_date, first_test_date], [last_train_val, first_test_val], 
+                 'k--', linewidth=2, marker='o', zorder=5, color='C1')
+        # ---------------------------------------------------------
+
         # Plot actuals
-        plt.plot(test_dates, actual_HKGDP, 'k--', linewidth=2, label='Actual HK GDP', color = 'C1')
+        plt.plot(test_dates, actual_HKGDP, 'k--', linewidth=2, label='Actual HK GDP', color = 'C1', marker = 'o')
     else:
         # Plot actuals
-        plt.plot(test_dates, actual_HKGDP, 'k--', linewidth=2, label='Actual HK GDP', marker='o')
+        plt.plot(test_dates, actual_HKGDP, 'k--', linewidth=2, label='Actual HK GDP', marker='o', color = 'C1')
     
     plt.title(f"HK GDP BVAR({p}, {lambda_val}, {delta}, {decay}) Forecast (RMSE: {final_rmse:.2f})", fontsize=14)
     plt.xlabel("Date", fontsize=12)
@@ -705,7 +713,7 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    #plt.show()
+    # plt.show() # Commented out for Streamlit compatibility
 
 
 # %%
@@ -900,6 +908,7 @@ def standardize_df(df):
     ## Keep dummies non-standardized
     Y_stand["Covid_dummy"] = df["Covid_dummy"]
     Y_stand["GFC_dummy"] = df["GFC_dummy"]
+    Y_stand["Protest_dummy"] = df["Protest_dummy"]
 
 
     standardization_dict = {}
@@ -1200,6 +1209,16 @@ def process_data(df, new_cols, covid_df, QoQ = True):
     df["GFC_dummy"] = ((df.index < gfc_end) & (df.index > gfc_start)) 
     df['GFC_dummy'] = df['GFC_dummy'].astype(int)
 
+    #==============================================#
+    ## ADDING A 2019 HK PROTEST DUMMY
+    #==============================================#
+
+    protest_start = '2019Q2'
+    protest_end = '2019Q4'
+
+    df["Protest_dummy"] = ((df.index < protest_end) & (df.index > protest_start)) 
+    df['Protest_dummy'] = df['Protest_dummy'].astype(int)
+
 
     ## ADD HONG KONG AND CHINA COVID CONTROLS
     
@@ -1259,8 +1278,10 @@ def slice_df(df, cutoff_date):
     Y_stand = (train - Y_means) / Y_stds
 
     ## Keep dummies non-standardized
-    Y_stand["Covid"] = train["Covid"]
-    Y_stand["GFC"] = train["GFC"]
+
+    Y_stand["Covid_dummy"] = train["Covid_dummy"]
+    Y_stand["GFC_dummy"] = train["GFC_dummy"]
+    Y_stand["Protest_dummy"] = train["Protest_dummy"]
 
 
     standardization_dict = {}
@@ -1269,6 +1290,92 @@ def slice_df(df, cutoff_date):
         standardization_dict[name] = [Y_means[idx], Y_stds[idx]]
 
     return Y_stand, train, test, standardization_dict
+# %%
+def integrated_forecast_graph(df, cutoff_date, col_spec, p, lambda_val, delta, decay, exog_list, exog_dict, n_draws, h_steps, plot_var_idx = 0, 
+                              print_eq_idx = 0, condition_dict = None, include_training=True, future_exog = None):
+    
+    ### Special app.py consideration ###
+    coeff_fig = None
+    ### Special app.py consideration ###
+
+    Y_stand, train, test, standardization_dict = slice_df(df, cutoff_date)
+
+    updated_exog_list = []
+
+    for exog_var in exog_list:
+        if np.any(Y_stand[exog_var]):
+            updated_exog_list.append(exog_var) ### Ensuring that no "useless" dummies are included.
+
+    X_exog = Y_stand[updated_exog_list] if updated_exog_list else None
+
+    #print(updated_exog_list)
+    test_HKGDP = test["HKGDP"]
+
+    # ---------------------------------------------------------
+    # NEW: SAFETY TRUNCATION
+    # ---------------------------------------------------------
+    # Ensure h_steps doesn't exceed the available test data length to prevent array shape crashes
+    actual_h_steps = min(h_steps, len(test))
+    if actual_h_steps < h_steps:
+        print(f"WARNING: h_steps truncated from {h_steps} to {actual_h_steps} due to test set size.")
+
+    # ---------------------------------------------------------
+    # NEW: EXTRACT & STANDARDIZE TRUE FUTURE EXOG VALUES
+    # ---------------------------------------------------------
+
+    dummy_list = ["Covid_dummy", "GFC_dummy", "Protest_dummy"]
+
+    future_exog_true = None
+    if updated_exog_list and actual_h_steps > 0:
+        # 1. Grab the raw future values from the test set, up to actual_h_steps
+        raw_future_exog = test[updated_exog_list].iloc[:actual_h_steps]
+        
+        # 2. Standardize them using the exact same mean/std from the training set
+        std_future_exog = pd.DataFrame(index=raw_future_exog.index, columns=raw_future_exog.columns)
+        for col in updated_exog_list:
+            if col not in dummy_list:
+                mean = standardization_dict[col][0]
+                std = standardization_dict[col][1]
+                std_future_exog[col] = (raw_future_exog[col] - mean) / std
+            else: std_future_exog[col] = raw_future_exog[col]
+            
+        # 3. Convert to numpy array
+        future_exog_true = std_future_exog.values
+    # ---------------------------------------------------------
+
+    #print(future_exog_true)
+
+    B_draws, Sigma_draws, B_post, S_post = estimate_bvar(Y_stand[col_spec], p=p, lambda_val=lambda_val, delta=delta, decay=decay, X_exog = X_exog, exog_dict = exog_dict, 
+                                                         n_draws = n_draws, plot_var_idx = plot_var_idx, print_eq_idx = print_eq_idx, var_names = col_spec, exog_names = updated_exog_list)
+    
+    ### Special app.py consideration ###
+    if plot_var_idx is not None:
+        coeff_fig = plt.gcf()
+    ### Special app.py consideration ###
+
+    # ---------------------------------------------------------
+    # UPDATED: Pass the true future exogenous values!
+    # ---------------------------------------------------------
+    conditional_forecast_draws = dynamic_conditional_forecast(
+        Y_stand[col_spec], 
+        p, 
+        B_draws, 
+        Sigma_draws, 
+        actual_h_steps, # Use the safely truncated h_steps
+        future_exog = future_exog_true, # <--- THIS IS THE MAGIC LINE
+        condition_dict = condition_dict
+    )
+
+    # forecast_graph handles its own internal truncation safely, but passing actual_h_steps keeps it clean
+    forecast_graph(conditional_forecast_draws, test_HKGDP, test_dates=test.index, p=p, lambda_val=lambda_val, delta=delta, decay=decay, 
+                   include_training=True, standardization_dict=standardization_dict, last_train_value=None, train=train)
+    
+    ### Special app.py consideration ###
+    return coeff_fig
+    ### Special app.py consideration ###
+    
+    
+    
 # %%
 def fit_arima_and_eval(p: int, d: int, q: int, train: pd.Series, test: pd.Series, isplot = True):
     """
