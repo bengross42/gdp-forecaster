@@ -16,6 +16,7 @@ from bvar_model import (
     unconditional_forecast,
     dynamic_conditional_forecast,
     plot_pure_forecast,
+    integrated_forecast_graph,
     VAR_grid_search, 
     rank_var_specification,
     create_exog_dict,
@@ -59,7 +60,7 @@ if uploaded_file is not None:
 
     available_variables = ["Imports", "Exports", "RSV", "HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO"]
     
-    selected_GDP = st.sidebar.multiselect(
+    selected_GDP = st.sidebar.selectbox(
         label="Choose HKGDP specification for the BVAR",
         options=["HKGDP_qoq", "HKGDP_yoy"],
         key = "sel_gdp"
@@ -73,7 +74,7 @@ if uploaded_file is not None:
 
     # --- NEW: EXOGENOUS CONTROL VARIABLES ---
     # Replace the names below with the EXACT column names from your merged dataframe
-    available_exog_controls = ["Covid_dummy", "GFC_dummy", "HK_Covid_Proxy", "China_Covid_Proxy"]
+    available_exog_controls = ["Covid_dummy", "GFC_dummy", "Protest_dummy", "HK_Covid_Proxy", "China_Covid_Proxy"]
     
     selected_exog = st.sidebar.multiselect(
         label="Choose Exogenous Control Variables",
@@ -110,7 +111,7 @@ if uploaded_file is not None:
             # 1. DEFINE THE CALLBACK FUNCTIONS FIRST
             # These run behind the scenes BEFORE the page redraws
 
-            default_exog = [x for x in available_exog_controls if x != "Covid_dummy"]
+            default_exog = [x for x in available_exog_controls if x not in ["Covid_dummy", "Protest_dummy"]]
 
             def load_rec_1():
                 st.session_state.sel_gdp = ["HKGDP_qoq"]
@@ -155,19 +156,18 @@ if uploaded_file is not None:
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("**1. QoQ Baseline (Parsimonious)**")
-                # Notice we use on_click= instead of if st.button
-                st.button("Load: QoQ | Core Vars | p=2, λ=.25, δ=.2", on_click=load_rec_1, use_container_width=True)
-                    
-                st.markdown("**3. YoY Baseline (Parsimonious)**")
+                st.markdown("**1. YoY Baseline (Parsimonious)**")
                 st.button("Load: YoY | Core Vars | p=6, λ=.4, δ=.2", on_click=load_rec_3, use_container_width=True)
+                    
+                st.markdown("**2. QoQ Baseline (Parsimonious)**")
+                st.button("Load: QoQ | Core Vars | p=2, λ=.25, δ=.2", on_click=load_rec_1, use_container_width=True)
 
             with col2:
-                st.markdown("**2. QoQ Full Model**")
-                st.button("Load: QoQ | All Vars | p=4, λ=.25, δ=.3", on_click=load_rec_2, use_container_width=True)
-                    
-                st.markdown("**4. YoY Full Model**")
+                st.markdown("**3. YoY Full Model**")
                 st.button("Load: YoY | All Vars | p=2, λ=.25, δ=.5", on_click=load_rec_4, use_container_width=True)
+                    
+                st.markdown("**4. QoQ Full Model**")
+                st.button("Load: QoQ | All Vars | p=4, λ=.25, δ=.3", on_click=load_rec_2, use_container_width=True)
             
             st.divider() 
             
@@ -373,6 +373,82 @@ if uploaded_file is not None:
                             )
 
                 st.success("Forecast Generated Successfully!")
+
+            # ==========================================
+            # NEW: HISTORICAL OUT-OF-SAMPLE TEST
+            # ==========================================
+            st.subheader("🔬 Historical Out-of-Sample Test")
+            st.markdown("Test how this specification would have performed historically.")
+            
+            # Create a row: Date picker on left (wider), Button on right (narrower)
+            hist_col1, hist_col2 = st.columns([2, 1])
+            
+            with hist_col1:
+                # Default to a date 4-5 years ago as a sensible default
+                default_hist_date = pd.to_datetime('2024-01-01')
+                hist_cutoff = st.date_input("Training Cutoff Date:", value=default_hist_date, key="hist_date")
+            
+            with hist_col2:
+                # Align the button to the bottom of the column so it lines up with the date input
+                st.write("") # Spacer
+                st.write("") # Spacer
+                hist_button = st.button("Run Historical Test", use_container_width=True)
+                
+            if hist_button:
+                with st.spinner(f"Estimating BVAR using data up to {hist_cutoff.strftime('%b %Y')}..."):
+                    
+                    # We need to catch the equation print() output again for this separate run
+                    hist_equation_buffer = io.StringIO()
+                    
+                    # Wrap the call to redirect print statements
+
+                    diff_exog_dict = {
+                        "HKGDP": ["FFR", "China_PMI_NEO"], "Imports": ["FFR", "China_PMI_NEO"], 
+                        "HSI": ["FFR", "China_PMI_NEO"], "PPI": ["FFR", "China_PMI_NEO"], 
+                        "Exports": ["FFR", "China_PMI_NEO"], "RSV": ["FFR", "China_PMI_NEO"], 
+                        "PST_Volume": ["FFR", "China_PMI_NEO"], "FFR": ["China_PMI_NEO"], 
+                        "China_PMI_NEO": ["FFR"]
+                    }
+                    exog_dict = create_exog_dict(final_cols, diff_exog_dict)
+
+                    with contextlib.redirect_stdout(hist_equation_buffer):
+                        hist_coeff_fig = integrated_forecast_graph(
+                            df=df,
+                            cutoff_date=pd.to_datetime(hist_cutoff), # Convert date input to pandas datetime
+                            col_spec=final_cols,
+                            p=lag_val,
+                            lambda_val=lambda_val,
+                            delta=delta,
+                            decay=decay,
+                            exog_list=selected_exog, # Uses the same exog selection from the sidebar!
+                            exog_dict=exog_dict,
+                            n_draws=n_draws,
+                            h_steps=h_steps,
+                            plot_var_idx=target_var_idx if show_plot else None,
+                            print_eq_idx=target_var_idx if show_equation else None,
+                            condition_dict=condition_dict,
+                            include_training=True,
+                            future_exog=None
+                        )
+                    
+                    # --- DISPLAY HISTORICAL EQUATION ---
+                    if show_equation:
+                        hist_eq_text = hist_equation_buffer.getvalue()
+                        if hist_eq_text.strip():
+                            st.subheader("📝 Historical Test - Estimating Equation")
+                            st.code(hist_eq_text, language=None)
+
+                    # --- DISPLAY HISTORICAL COEFFICIENT PLOT ---
+                    if show_plot:
+                        st.subheader("📊 Historical Test - Posterior Coefficients")
+                        st.pyplot(hist_coeff_fig)
+
+                    # --- DISPLAY HISTORICAL FORECAST GRAPH ---
+                    st.subheader("📈 Historical Test - Forecast vs Actuals")
+                    st.pyplot(plt.gcf())
+                    plt.clf()
+
+                st.success("Historical Test Complete!")
 
         except Exception as e:
             st.error(f"Failed to process file or run model. Error: {e}")
