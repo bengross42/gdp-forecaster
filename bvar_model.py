@@ -16,6 +16,11 @@ import os
 
 # %%
 def construct_var_matrix(Y, p, X_exog=None):
+
+    # ==========================================================================================
+    # Constructs the Y and X matrices needed for calculations (see equation 11 in Wozniak paper)
+    # ==========================================================================================
+
     Y = np.asarray(Y)
      
     T, n = Y.shape
@@ -263,6 +268,10 @@ def estimate_bvar(Y, p, X_exog = None, lambda_val=0.2, delta=0.5, decay=2, n_dra
     B_prior, V_prior, S_prior, nu_prior = minnesota_prior(
     Y, p, X_exog, lambda_val, delta, decay, exog_dict, constant_var
     ) 
+
+    # ====================================================================================================================================
+    # Posteriors are calculated according to equation 25 in Wozniak, with extra kronecker calculations used for dimensional considerations
+    # =====================================================================================================================================
     
     V_post_inv = np.linalg.inv(V_prior) + np.kron(np.eye(n), X_mat.T @ X_mat)
     V_post = np.linalg.inv(V_post_inv)
@@ -510,7 +519,7 @@ def dynamic_conditional_forecast(Y, p, B_draws, Sigma_draws, h_steps, future_exo
     # Handle the case where no conditions are passed at all (pure unconditional)
     if not condition_dict:
         condition_dict = {}
-        forecast_draws = unconditional_forecast(Y, p, B_draws, Sigma_draws, h_steps, future_exog = None)
+        forecast_draws = unconditional_forecast(Y, p, B_draws, Sigma_draws, h_steps, future_exog = future_exog)
         return forecast_draws
     
     Y = np.asarray(Y)
@@ -580,6 +589,7 @@ def dynamic_conditional_forecast(Y, p, B_draws, Sigma_draws, h_steps, future_exo
                 # Extract the specific values for the variables locked at this step h
                 cond_vals_h = np.array([condition_dict[idx][h] for idx in cond_idx_h])
 
+                # Calculates new mean and variance for free variables
                 mu_star = mu_f + Sigma_fc @ Sigma_cc_inv @ (cond_vals_h - mu_c)
                 Sigma_star = Sigma_ff - Sigma_fc @ Sigma_cc_inv @ Sigma_fc.T
 
@@ -718,6 +728,11 @@ def forecast_graph(forecast_draws, actual_HKGDP, test_dates, p, lambda_val, delt
 
 # %%
 def build_condition_dict(test, cond_setup, standardization_dict):
+
+    # ================================================================================================
+    # Makes a dictionary of conditioned values, standardizing and converting the key to a column index
+    # ================================================================================================
+
     condition_dict = {}
     for key in cond_setup.keys():
         index = test.columns.get_loc(key)
@@ -813,6 +828,10 @@ def plot_pure_forecast(forecast_draws, forecast_dates, standardization_dict,
 
 # %%
 def grid_search (df, col_spec, lag_vals, lambda_vals, deltas, decays, training_cutoffs, exog_list, exog_dict, h_steps, n_draws, test_HKGDP, test_dates, cond_setup = None, rolling = False, window = None):
+
+    # ==============================================================================================================
+    # Runs a grid search across a given range of hyperparameters keeping exogenous variables and dictionary constant
+    # ==============================================================================================================
     
     RMSE_list = np.zeros((len(training_cutoffs), len(lag_vals), len(lambda_vals), len(deltas), len(decays)))
 
@@ -899,7 +918,9 @@ def grid_search (df, col_spec, lag_vals, lambda_vals, deltas, decays, training_c
 # %%
 def standardize_df(df):
   
-
+    # ===================================================================================================================
+    # Standardizes data WITHOUT splitting into training and testing data - used for pure forecasting
+    # ===================================================================================================================
 
     Y_means = df.mean().values
     Y_stds = df.std().values
@@ -924,53 +945,56 @@ def clean_timeseries_dataset(df, col_names):
     Cleans a raw macroeconomic dataset by keeping only specified columns 
     and dropping rows with any missing values, maximizing the date range.
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        The raw dataset (likely with many NaNs at the beginning of series).
-    col_names : list of str
-        The specific columns you want to keep for your analysis.
-        
     Returns:
     --------
-    pd.DataFrame
-        The cleaned dataset containing only the requested columns, with no NaNs,
-        sorted chronologically.
+    df_clean : pd.DataFrame
+    raw_excess_dict : dict
+        A dictionary containing lists of raw data points that exist BEYOND 
+        the final balanced row (i.e., leading indicator data).
     """
-    # 1. Validate inputs: Check if the requested columns actually exist
     missing_cols = [col for col in col_names if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Cannot find the following columns in the DataFrame: {missing_cols}")
         
-    # 2. Subset the DataFrame to ONLY the columns we care about
-    # We use .copy() to avoid Pandas 'SettingWithCopy' warnings later
     df_clean = df[col_names].copy()
     
-    # 3. Record how much data we are starting with (for reporting)
-    start_rows = len(df_clean)
+    # ==========================================
+    # NEW: EXTRACT LEADING/EXCESS DATA (BULLETPROOF)
+    # ==========================================
+    raw_excess_dict = {}
     
-    # 4. Drop any row that has even a single NaN in our target columns
+    # 1. Find the index of the very LAST row that has absolutely zero NaNs.
+    # This represents the exact end of your balanced BVAR training matrix.
+    last_valid_row = df_clean.dropna().index[-1]
+    last_valid_loc = df_clean.index.get_loc(last_valid_row)
+    
+    # 2. For each variable, look STRICTLY after that cutoff date.
+    # If Imports has data 2 quarters past where GDP ends, it grabs those 2 quarters.
+    # If FFR has no data past the cutoff, it returns an empty list and is ignored.
+    for col in col_names:
+        # +1 ensures we don't include the cutoff date itself
+        excess_vals = df_clean[col].iloc[last_valid_loc + 1:].dropna().tolist()
+        
+        if excess_vals:
+            raw_excess_dict[col] = excess_vals
+    # ==========================================
+
+    # 3. Drop any row that has even a single NaN to create the balanced BVAR matrix
     df_clean = df_clean.dropna()
     
-    # 5. Sort chronologically (crucial for time-series BVARs)
-    # If the index is datetime, this puts it in perfect order
     try:
         df_clean = df_clean.sort_index()
     except TypeError:
-        pass # If index isn't datetime, sorting still works but isn't strictly necessary
+        pass
         
-    # 6. Report the trimming impact
     end_rows = len(df_clean)
-    dropped_rows = start_rows - end_rows
     
     print(f"Dataset Cleaning Complete:")
-    print(f"  - Starting rows (with NaNs in target cols): {start_rows}")
-    print(f"  - Final clean rows (no NaNs): {end_rows}")
-    print(f"  - Rows dropped: {dropped_rows} ({(dropped_rows/start_rows)*100:.1f}% of data removed)")
-    print(f"  - Start Date: {df_clean.index[0]}")
-    print(f"  - End Date:   {df_clean.index[-1]}\n")
+    print(f"  - Final clean rows: {end_rows} | Start Date: {df_clean.index[0]} | End Date: {df_clean.index[-1]}")
+    if raw_excess_dict:
+        print(f"  - Detected leading excess data (Nowcastable) for: {list(raw_excess_dict.keys())}\n")
     
-    return df_clean
+    return df_clean, raw_excess_dict
 
 # %%
 def create_exog_dict(column_names, string_exog_dict):
@@ -1006,7 +1030,11 @@ def create_exog_dict(column_names, string_exog_dict):
 
 # %%
 def rank_specification(RMSE_list, lag_vals, lambda_vals, deltas, decays, training_cutoffs):
-    
+
+    # =============================================================================================================================
+    # Pairs with grid search - takes the list of RMSEs and calculates the total rank of each model specification with printed output
+    # ==============================================================================================================================
+
     # 1. Flatten the 5D array into a long list of records
     records = []
     for i, cutoff in enumerate(training_cutoffs):
@@ -1121,6 +1149,10 @@ def plot_gdp_with_events(df, event_dates, gdp_col='GDP', line_color='red'):
 # %%
 def process_data(df, new_cols, covid_df, QoQ = True):
 
+    # ==============================================================================================================
+    # Makes the proper variable transformations and adds exogenous variables to the dataframe
+    # ==============================================================================================================
+
     df.columns = ["Quarter", "HKGDP", "HKGDP_yoy", "Imports", "Exports", "RSV", "HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO", "CCPI"]
 
     cols = ["HKGDP", "HKGDP_yoy", "Imports", "Exports", "RSV", "HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO", "CCPI"]
@@ -1183,7 +1215,7 @@ def process_data(df, new_cols, covid_df, QoQ = True):
         df["HKGDP"] = df["HKGDP_yoy"]/100
         df=df.drop(columns = "HKGDP_yoy")
 
-    df = clean_timeseries_dataset(df, new_cols)
+    df, raw_excess_dict = clean_timeseries_dataset(df, new_cols)
 
     #==============================================#
     ## ADDING A COVID DUMMY FOR COMPARISON
@@ -1259,13 +1291,15 @@ def process_data(df, new_cols, covid_df, QoQ = True):
     df["China_Covid_Proxy"] = new_covid_df["China_new_cases"]
     df['China_Covid_Proxy'] = df['China_Covid_Proxy'].fillna(0)
 
-    return df
+    return df, raw_excess_dict
 
 
 # %%
 def slice_df(df, cutoff_date):
-    ## INITIALIZING TRAINING DATA BASED ON 2023Q3 CUTOFF
 
+    # ===================================================================================================================
+    # Separates the dataframe into a training and testing subset according to a cutoff date. It also standardizes the data
+    # ===================================================================================================================
 
     train = df.loc[df.index <= cutoff_date].dropna()
     test  = df.loc[df.index > cutoff_date].dropna()
@@ -1293,7 +1327,12 @@ def slice_df(df, cutoff_date):
 # %%
 def integrated_forecast_graph(df, cutoff_date, col_spec, p, lambda_val, delta, decay, exog_list, exog_dict, n_draws, h_steps, plot_var_idx = 0, 
                               print_eq_idx = 0, condition_dict = None, include_training=True, future_exog = None):
-    
+
+    # ==========================================================================================
+    # Produces a forecast graph given a training cut-off date
+    # ==========================================================================================
+
+
     ### Special app.py consideration ###
     coeff_fig = None
     ### Special app.py consideration ###
@@ -1451,6 +1490,10 @@ def fit_arima_and_eval(p: int, d: int, q: int, train: pd.Series, test: pd.Series
 
 # %%
 def arma_grid_search (Y, p_vals, q_vals, training_cutoffs, h_steps):
+
+    # =============================================================================================================================
+    # Same as regular grid search but this one is used for a range of ARMA specifications
+    # ==============================================================================================================================
 
     ARMA_RMSE = np.zeros((len(training_cutoffs), len(p_vals), len(q_vals)))
 
