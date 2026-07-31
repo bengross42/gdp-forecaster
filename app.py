@@ -4,10 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 import contextlib
+#import importlib
+
+
 
 # Import the functions you saved in Step 2
 from bvar_model import (
-    process_data,
+    updated_process_data,
     standardize_df,
     slice_df,
     construct_var_matrix,
@@ -20,9 +23,9 @@ from bvar_model import (
     VAR_grid_search, 
     rank_var_specification,
     create_exog_dict,
-    plot_gdp_with_events 
+    plot_gdp_with_events
 )
-
+#importlib.reload(bvar_model)
 # ==========================================
 # PRO-TIP: CACHING
 # ==========================================
@@ -40,8 +43,10 @@ def load_covid_control_data():
 @st.cache_data
 def load_and_process_data(uploaded_file, new_cols, covid_df, QoQ):
     df_raw = pd.read_excel(uploaded_file)
-    df = process_data(df_raw, new_cols, covid_df, QoQ)
-    return df
+
+    df, raw_excess_dict = updated_process_data(df_raw, new_cols, covid_df, QoQ)
+
+    return df, raw_excess_dict
 # ==========================================
 
 # --- PAGE CONFIGURATION ---
@@ -58,7 +63,8 @@ uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=['xlsx'])
 # Only show the rest of the sidebar if a file is uploaded
 if uploaded_file is not None:
 
-    available_variables = ["Imports", "Exports", "RSV", "HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO"]
+    available_variables = ["Imports", "Exports", "RSV", "TR_HSI", "HSI", "HSI_Turnover", "PPI", "PST_Volume", "PST_Value", "FFR", "China_PMI_NEO"]
+    original_variables = ["Imports", "Exports", "RSV", "TR_HSI", "PPI", "PST_Volume", "FFR", "China_PMI_NEO"]
     
     selected_GDP = st.sidebar.selectbox(
         label="Choose HKGDP specification for the BVAR",
@@ -82,12 +88,14 @@ if uploaded_file is not None:
         key="sel_exog"
     )
 
-    if len(selected_GDP) > 0 and selected_GDP[0] == "HKGDP_qoq":
+    if selected_GDP == "HKGDP_qoq":
         QoQ = True
+        st.success("Endogenous variables will be processed as annualized QoQ variables.")
     else:
         QoQ = False
+        st.success("Endogenous variables will be processed as YoY variables.")
 
-    if len(selected_variables) == 0 and len(selected_GDP) == 0:
+    if len(selected_variables) == 0 and not(selected_GDP):
         st.warning("Please select at least one variable from the sidebar.")
 
     else:
@@ -95,7 +103,8 @@ if uploaded_file is not None:
             final_cols = ["HKGDP"] + selected_variables
 
             covid_df = load_covid_control_data()
-            df = load_and_process_data(uploaded_file, final_cols, covid_df, QoQ)
+
+            df, raw_excess_dict = load_and_process_data(uploaded_file, final_cols, covid_df, QoQ)
 
             # for exog_var in available_exog_controls:
             #     if exog_var not in selected_exog:
@@ -114,39 +123,39 @@ if uploaded_file is not None:
             default_exog = [x for x in available_exog_controls if x not in ["Covid_dummy", "Protest_dummy"]]
 
             def load_rec_1():
-                st.session_state.sel_gdp = ["HKGDP_qoq"]
-                st.session_state.sel_vars = ["Imports", "RSV", "FFR"]
-                st.session_state.lag_val = 2
-                st.session_state.lambda_val = 0.25
+                st.session_state.sel_gdp = "HKGDP_qoq"
+                st.session_state.sel_vars = ["Imports", "TR_HSI", "FFR"]
+                st.session_state.lag_val = 7
+                st.session_state.lambda_val = 0.35
                 st.session_state.delta_val = 0.2
-                st.session_state.decay_val = 1
+                st.session_state.decay_val = 2
                 st.session_state.sel_exog = default_exog
 
             def load_rec_2():
-                st.session_state.sel_gdp = ["HKGDP_qoq"]
-                st.session_state.sel_vars = available_variables # Selects ALL
+                st.session_state.sel_gdp = "HKGDP_qoq"
+                st.session_state.sel_vars = original_variables # Selects ALL
                 st.session_state.lag_val = 4
-                st.session_state.lambda_val = 0.25
+                st.session_state.lambda_val = 0.4
+                st.session_state.delta_val = 0.2
+                st.session_state.decay_val = 3
+                st.session_state.sel_exog = default_exog
+
+            def load_rec_3():
+                st.session_state.sel_gdp = "HKGDP_yoy"
+                st.session_state.sel_vars = ["Imports", "TR_HSI", "FFR"]
+                st.session_state.lag_val = 5
+                st.session_state.lambda_val = 0.4
                 st.session_state.delta_val = 0.3
                 st.session_state.decay_val = 1
                 st.session_state.sel_exog = default_exog
 
-            def load_rec_3():
-                st.session_state.sel_gdp = ["HKGDP_yoy"]
-                st.session_state.sel_vars = ["Imports", "RSV", "FFR"]
-                st.session_state.lag_val = 6
+            def load_rec_4():
+                st.session_state.sel_gdp = "HKGDP_yoy"
+                st.session_state.sel_vars = original_variables # Selects ALL
+                st.session_state.lag_val = 5
                 st.session_state.lambda_val = 0.4
                 st.session_state.delta_val = 0.2
-                st.session_state.decay_val = 1
-                st.session_state.sel_exog = default_exog
-
-            def load_rec_4():
-                st.session_state.sel_gdp = ["HKGDP_yoy"]
-                st.session_state.sel_vars = available_variables # Selects ALL
-                st.session_state.lag_val = 2
-                st.session_state.lambda_val = 0.25
-                st.session_state.delta_val = 0.5
-                st.session_state.decay_val = 1
+                st.session_state.decay_val = 2
                 st.session_state.sel_exog = default_exog
 
             # 2. ASSIGN CALLBACKS TO BUTTONS
@@ -157,17 +166,17 @@ if uploaded_file is not None:
             
             with col1:
                 st.markdown("**1. YoY Baseline (Parsimonious)**")
-                st.button("Load: YoY | Core Vars | p=6, λ=.4, δ=.2", on_click=load_rec_3, use_container_width=True)
+                st.button("Load: YoY | Core Vars | p=5, λ=.4, δ=.3, decay=1", on_click=load_rec_3, use_container_width=True)
                     
                 st.markdown("**2. QoQ Baseline (Parsimonious)**")
-                st.button("Load: QoQ | Core Vars | p=2, λ=.25, δ=.2", on_click=load_rec_1, use_container_width=True)
+                st.button("Load: QoQ | Core Vars | p=7, λ=.35, δ=.2, decay=2", on_click=load_rec_1, use_container_width=True)
 
             with col2:
                 st.markdown("**3. YoY Full Model**")
-                st.button("Load: YoY | All Vars | p=2, λ=.25, δ=.5", on_click=load_rec_4, use_container_width=True)
+                st.button("Load: YoY | All Vars | p=5, λ=.4, δ=.3, decay=3", on_click=load_rec_4, use_container_width=True)
                     
                 st.markdown("**4. QoQ Full Model**")
-                st.button("Load: QoQ | All Vars | p=4, λ=.25, δ=.3", on_click=load_rec_2, use_container_width=True)
+                st.button("Load: QoQ | All Vars | p=4, λ=.4, δ=.2, decay=3", on_click=load_rec_2, use_container_width=True)
             
             st.divider() 
             
@@ -192,6 +201,7 @@ if uploaded_file is not None:
             st.sidebar.header("3. Display Options")
             show_plot = st.sidebar.checkbox("Show Coefficient Plot")
             show_equation = st.sidebar.checkbox("Show Estimating Equation")
+            show_coef_table = st.sidebar.checkbox("Show Coefficient Table")
             target_var_idx = st.sidebar.number_input("Variable Index to Plot/Print (0 = first column)", value=0)
 
                         # ==========================================
@@ -204,6 +214,30 @@ if uploaded_file is not None:
     
             if run_scenario:
                 st.sidebar.error("⚠️ WARNING: Input values must be in STANDARDIZED units (e.g., 1.0 for a 1 std dev shock), NOT raw percentages!")
+
+                # --- NEW: NOWCAST AUTO-POPULATE BUTTON ---
+                if raw_excess_dict:
+                    if st.sidebar.button("⚡ Auto-Populate Nowcast Data", use_container_width=True):
+                        # We must standardize the raw excess data. 
+                        # To do this safely without waiting for the main forecast button, 
+                        # we run standardize_df locally just to get the means/stds.
+                        Y_stand_temp, std_dict_temp = standardize_df(df)
+                        
+                        for var_name in selected_variables: # Note: HKGDP is excluded from this list
+                            if var_name in raw_excess_dict:
+                                raw_vals = raw_excess_dict[var_name]
+                                mean_val = std_dict_temp[var_name][0]
+                                std_val = std_dict_temp[var_name][1]
+                                for h in range(min(len(raw_vals), h_steps)):
+                                    z_score = (raw_vals[h] - mean_val) / std_val
+
+                                    # Inject the z-score into the specific text box
+                                    st.session_state[f"cond_{var_name}_{h}"] = f"{z_score:.5f}"
+                        
+                        st.rerun()
+                else:
+                    st.sidebar.info("No leading data detected in the uploaded Excel file to populate.")
+                # --------------------------------------
                 
                 # --- DYNAMIC FONT SIZE LOGIC ---
                 # Start at 16px, shrink by ~1.2px for every step over 1, minimum 9px
@@ -265,11 +299,12 @@ if uploaded_file is not None:
                     # --- DATA PREP ---
                     Y_stand, standardization_dict = standardize_df(df)
                     diff_exog_dict = {
-                        "HKGDP": ["FFR", "China_PMI_NEO"], "Imports": ["FFR", "China_PMI_NEO"], 
-                        "HSI": ["FFR", "China_PMI_NEO"], "PPI": ["FFR", "China_PMI_NEO"], 
-                        "Exports": ["FFR", "China_PMI_NEO"], "RSV": ["FFR", "China_PMI_NEO"], 
-                        "PST_Volume": ["FFR", "China_PMI_NEO"], "FFR": ["China_PMI_NEO"], 
-                        "China_PMI_NEO": ["FFR"]
+                    "HKGDP": ["FFR", "China_PMI_NEO"], "Imports": ["FFR", "China_PMI_NEO"], 
+                    "TR_HSI": ["FFR", "China_PMI_NEO"], "HSI": ["FFR", "China_PMI_NEO"], 
+                    "HSI_Turnover": ["FFR", "China_PMI_NEO"], "PST_Value": ["FFR", "China_PMI_NEO"], 
+                    "PPI": ["FFR", "China_PMI_NEO"], "Exports": ["FFR", "China_PMI_NEO"], 
+                    "RSV": ["FFR", "China_PMI_NEO"], "PST_Volume": ["FFR", "China_PMI_NEO"], 
+                    "FFR": ["China_PMI_NEO"], "China_PMI_NEO": ["FFR"]
                     }
                     exog_dict = create_exog_dict(final_cols, diff_exog_dict)
 
@@ -287,27 +322,47 @@ if uploaded_file is not None:
                     # --- DYNAMICALLY SET PLOT/EQUATION ARGS ---
                     plot_idx = target_var_idx if show_plot else None
                     eq_idx = target_var_idx if show_equation else None
+                    coef_table_idx = target_var_idx if show_coef_table else None
 
                     # --- ESTIMATE BVAR ---
                     # Create a temporary string buffer to catch the print() statement
                     equation_buffer = io.StringIO()
                     
                     # Run the function, but redirect any print() outputs to our buffer
-                    with contextlib.redirect_stdout(equation_buffer):
-                        B_draws, Sigma_draws, B_post, S_post = estimate_bvar(
-                            Y_stand[final_cols], 
-                            p=lag_val, 
-                            lambda_val=lambda_val, 
-                            delta=delta, 
-                            decay=decay, 
-                            X_exog=X_exog, 
-                            exog_dict=exog_dict, 
-                            n_draws=n_draws, 
-                            plot_var_idx=plot_idx, 
-                            print_eq_idx=eq_idx, 
-                            var_names=final_cols, 
-                            exog_names=exog_list
-                        )
+                    if coef_table_idx is not None:
+                        with contextlib.redirect_stdout(equation_buffer):
+                            B_draws, Sigma_draws, B_post, S_post, coef_table = estimate_bvar(
+                                Y_stand[final_cols], 
+                                p=lag_val, 
+                                lambda_val=lambda_val, 
+                                delta=delta, 
+                                decay=decay, 
+                                X_exog=X_exog, 
+                                exog_dict=exog_dict, 
+                                n_draws=n_draws, 
+                                plot_var_idx=plot_idx, 
+                                print_eq_idx=eq_idx, 
+                                var_names=final_cols, 
+                                exog_names=exog_list,
+                                coef_table_var_idx = coef_table_idx
+                            )
+                    else:
+                        with contextlib.redirect_stdout(equation_buffer):
+                            B_draws, Sigma_draws, B_post, S_post = estimate_bvar(
+                                Y_stand[final_cols], 
+                                p=lag_val, 
+                                lambda_val=lambda_val, 
+                                delta=delta, 
+                                decay=decay, 
+                                X_exog=X_exog, 
+                                exog_dict=exog_dict, 
+                                n_draws=n_draws, 
+                                plot_var_idx=plot_idx, 
+                                print_eq_idx=eq_idx, 
+                                var_names=final_cols, 
+                                exog_names=exog_list,
+                                coef_table_var_idx = coef_table_idx
+                                                    )
 
                     # --- DISPLAY ESTIMATING EQUATION ---
                     if show_equation:
@@ -325,6 +380,10 @@ if uploaded_file is not None:
                         # Grab the figure created inside estimate_bvar and display it
                         st.pyplot(plt.gcf())
                         plt.clf() # Clear it so it doesn't bleed into the forecast plot
+
+                    if show_coef_table:
+                        st.subheader("Downloadable Table of Coefficient Means")
+                        st.dataframe(coef_table)
 
                     # --- GENERATE FORECAST ---
                     conditional_forecast_draws = dynamic_conditional_forecast(
@@ -403,33 +462,57 @@ if uploaded_file is not None:
                     # Wrap the call to redirect print statements
 
                     diff_exog_dict = {
-                        "HKGDP": ["FFR", "China_PMI_NEO"], "Imports": ["FFR", "China_PMI_NEO"], 
-                        "HSI": ["FFR", "China_PMI_NEO"], "PPI": ["FFR", "China_PMI_NEO"], 
-                        "Exports": ["FFR", "China_PMI_NEO"], "RSV": ["FFR", "China_PMI_NEO"], 
-                        "PST_Volume": ["FFR", "China_PMI_NEO"], "FFR": ["China_PMI_NEO"], 
-                        "China_PMI_NEO": ["FFR"]
+                    "HKGDP": ["FFR", "China_PMI_NEO"], "Imports": ["FFR", "China_PMI_NEO"], 
+                    "TR_HSI": ["FFR", "China_PMI_NEO"], "HSI": ["FFR", "China_PMI_NEO"], 
+                    "HSI_Turnover": ["FFR", "China_PMI_NEO"], "PST_Value": ["FFR", "China_PMI_NEO"], 
+                    "PPI": ["FFR", "China_PMI_NEO"], "Exports": ["FFR", "China_PMI_NEO"], 
+                    "RSV": ["FFR", "China_PMI_NEO"], "PST_Volume": ["FFR", "China_PMI_NEO"], 
+                    "FFR": ["China_PMI_NEO"], "China_PMI_NEO": ["FFR"]
                     }
+                    
                     exog_dict = create_exog_dict(final_cols, diff_exog_dict)
 
-                    with contextlib.redirect_stdout(hist_equation_buffer):
+                    if show_coef_table:
+                        with contextlib.redirect_stdout(hist_equation_buffer):
+                            hist_coeff_fig, coef_table = integrated_forecast_graph(
+                                df=df,
+                                cutoff_date=pd.to_datetime(hist_cutoff), # Convert date input to pandas datetime
+                                col_spec=final_cols,
+                                p=lag_val,
+                                lambda_val=lambda_val,
+                                delta=delta,
+                                decay=decay,
+                                exog_list=selected_exog, # Uses the same exog selection from the sidebar!
+                                exog_dict=exog_dict,
+                                n_draws=n_draws,
+                                h_steps=h_steps,
+                                plot_var_idx=target_var_idx if show_plot else None,
+                                print_eq_idx=target_var_idx if show_equation else None,
+                                coef_table_var_idx = target_var_idx if show_coef_table else None,
+                                condition_dict=condition_dict,
+                                include_training=True,
+                                future_exog=None
+                            )
+                    else:
                         hist_coeff_fig = integrated_forecast_graph(
-                            df=df,
-                            cutoff_date=pd.to_datetime(hist_cutoff), # Convert date input to pandas datetime
-                            col_spec=final_cols,
-                            p=lag_val,
-                            lambda_val=lambda_val,
-                            delta=delta,
-                            decay=decay,
-                            exog_list=selected_exog, # Uses the same exog selection from the sidebar!
-                            exog_dict=exog_dict,
-                            n_draws=n_draws,
-                            h_steps=h_steps,
-                            plot_var_idx=target_var_idx if show_plot else None,
-                            print_eq_idx=target_var_idx if show_equation else None,
-                            condition_dict=condition_dict,
-                            include_training=True,
-                            future_exog=None
-                        )
+                                df=df,
+                                cutoff_date=pd.to_datetime(hist_cutoff), # Convert date input to pandas datetime
+                                col_spec=final_cols,
+                                p=lag_val,
+                                lambda_val=lambda_val,
+                                delta=delta,
+                                decay=decay,
+                                exog_list=selected_exog, # Uses the same exog selection from the sidebar!
+                                exog_dict=exog_dict,
+                                n_draws=n_draws,
+                                h_steps=h_steps,
+                                plot_var_idx=target_var_idx if show_plot else None,
+                                print_eq_idx=target_var_idx if show_equation else None,
+                                coef_table_var_idx = target_var_idx if show_coef_table else None,
+                                condition_dict=condition_dict,
+                                include_training=True,
+                                future_exog=None
+                            )
                     
                     # --- DISPLAY HISTORICAL EQUATION ---
                     if show_equation:
@@ -442,6 +525,10 @@ if uploaded_file is not None:
                     if show_plot:
                         st.subheader("📊 Historical Test - Posterior Coefficients")
                         st.pyplot(hist_coeff_fig)
+
+                    if show_coef_table:
+                        st.subheader("Coefficients Table")
+                        st.dataframe(coef_table)
 
                     # --- DISPLAY HISTORICAL FORECAST GRAPH ---
                     st.subheader("📈 Historical Test - Forecast vs Actuals")
